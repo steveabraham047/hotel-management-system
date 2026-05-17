@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const db = require('../config/db');
 const { ensurePublicTables } = require('../controllers/publicController');
+const { getPricingRules, getOccupancyRate, calculateDynamicPrice } = require('../controllers/pricingController');
 
 const defaultDetailsByType = {
     Standard: {
@@ -219,6 +220,8 @@ const upsertPublicDetails = async (roomId, body, roomNumber, type) => {
 router.get('/', async (req, res) => {
     try {
         await ensurePublicTables();
+        const rules = await getPricingRules();
+        const occupancy = await getOccupancyRate();
         const [rooms] = await db.query(
             `SELECT
                 r.room_id,
@@ -240,7 +243,10 @@ router.get('/', async (req, res) => {
              LEFT JOIN room_public_details d ON d.room_id = r.room_id
              ORDER BY CAST(r.room_number AS UNSIGNED), r.room_number`
         );
-        res.json(rooms.map(mapAdminRoom));
+        res.json(rooms.map((room) => ({
+            ...mapAdminRoom(room),
+            ...calculateDynamicPrice(room.price_per_night, rules, occupancy.occupancyRate)
+        })));
     } catch (err) {
         res.status(500).json({ error: err.message });
     }

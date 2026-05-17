@@ -1,4 +1,5 @@
 const db = require('../config/db');
+const { getPricingRules, getOccupancyRate, calculateDynamicPrice } = require('./pricingController');
 
 const fallbackByType = {
     Suite: {
@@ -248,11 +249,19 @@ const buildAvailabilityClause = (checkIn, checkOut) => {
     };
 };
 
-const mapRoom = (room) => {
+const mapRoom = (room, pricingContext = null) => {
     const typeFallback = fallbackByType[normalizeType(room.type)];
     const gallery = parseJsonList(room.gallery_json, typeFallback.gallery);
     const amenities = parseJsonList(room.amenities_json, typeFallback.amenities);
     const included = parseJsonList(room.included_json, typeFallback.included);
+    const dynamic = pricingContext
+        ? calculateDynamicPrice(room.price_per_night, pricingContext.rules, pricingContext.occupancyRate, pricingContext.date)
+        : {
+            base_price: Number(room.price_per_night),
+            dynamic_price: Number(room.price_per_night),
+            multiplier: 1,
+            reasons: { weekend: false, surge: false, season: false }
+        };
 
     return {
         id: `room-${room.room_id}`,
@@ -260,8 +269,12 @@ const mapRoom = (room) => {
         room_number: room.room_number,
         title: room.title || `${typeFallback.title} ${room.room_number}`,
         type: room.type,
-        price: Number(room.price_per_night),
+        price: dynamic.dynamic_price,
         price_per_night: Number(room.price_per_night),
+        base_price: dynamic.base_price,
+        dynamic_price: dynamic.dynamic_price,
+        price_multiplier: dynamic.multiplier,
+        pricing_reasons: dynamic.reasons,
         capacity: Number(room.capacity || typeFallback.capacity),
         rating: Number(room.rating || typeFallback.rating),
         popular: Boolean(room.popular),
@@ -281,6 +294,8 @@ const getPublicRooms = async (req, res) => {
 
     try {
         await ensurePublicTables();
+        const rules = await getPricingRules();
+        const occupancy = await getOccupancyRate();
         const availability = buildAvailabilityClause(check_in, check_out);
         const params = [...availability.params];
         const filters = [`(${availability.sql})`];
@@ -325,7 +340,11 @@ const getPublicRooms = async (req, res) => {
             [...availability.params, ...params]
         );
 
-        res.json(rooms.map(mapRoom));
+        res.json(rooms.map((room) => mapRoom(room, {
+            rules,
+            occupancyRate: occupancy.occupancyRate,
+            date: check_in || new Date()
+        })));
     } catch (error) {
         res.status(500).json({ error: error.message });
     }

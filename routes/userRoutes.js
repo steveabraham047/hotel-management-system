@@ -18,6 +18,8 @@ const {
     createGuestBooking
 } = require('../controllers/userController');
 const { getGuestMenu, placeRoomServiceOrder, getGuestOrders } = require('../controllers/roomServiceController');
+const { getGuestDigitalKey } = require('../controllers/digitalKeyController');
+const { getEligibleReviews, submitGuestReview } = require('../controllers/reviewController');
 
 const verifyGuest = (req, res, next) => {
     if (req.user?.role !== 'Guest' || req.user?.type !== 'guest') {
@@ -40,6 +42,9 @@ router.post('/bookings', createGuestBooking);
 router.post('/bookings/:booking_id/cancel', cancelGuestBooking);
 router.post('/bookings/:booking_id/rebook', rebookGuestBooking);
 router.get('/invoices', getGuestInvoices);
+router.get('/digital-key', getGuestDigitalKey);
+router.get('/reviews/eligible', getEligibleReviews);
+router.post('/reviews', submitGuestReview);
 router.get('/preferences', getGuestPreferences);
 router.put('/preferences', updateGuestPreferences);
 router.post('/saved-rooms/toggle', toggleSavedRoom);

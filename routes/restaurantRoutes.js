@@ -77,6 +77,52 @@ router.get('/tab/:room_id', async (req, res) => {
     }
 });
 
+// --- GET /api/restaurant/room-orders: All pending room service orders (for waiter) ---
+router.get('/room-orders', verifyToken, async (req, res) => {
+    try {
+        const [orders] = await db.query(
+            `SELECT 
+                ro.order_id,
+                ro.total_amount,
+                ro.status,
+                ro.order_type,
+                ro.created_at,
+                r.room_number,
+                g.name AS guest_name,
+                g.phone AS guest_phone
+             FROM restaurant_orders ro
+             JOIN bookings b ON ro.booking_id = b.booking_id
+             JOIN rooms r    ON b.room_id = r.room_id
+             JOIN guests g   ON b.guest_id = g.guest_id
+             WHERE ro.order_type = 'room_service'
+               AND ro.status IN ('Unpaid', 'Pending')
+             ORDER BY ro.created_at DESC
+             LIMIT 50`
+        );
+        res.json(orders);
+    } catch (error) {
+        console.error('Fetch room orders error:', error);
+        res.status(500).json({ error: 'Failed to fetch room orders.' });
+    }
+});
+
+// --- PATCH /api/restaurant/room-orders/:id/serve: Mark order as served ---
+router.patch('/room-orders/:id/serve', verifyToken, async (req, res) => {
+    try {
+        // Keep status 'Unpaid' so it gets added to the room bill at checkout
+        // Just add a 'served_at' timestamp concept via a note update
+        // We update order_type to 'room_service_served' to differentiate
+        await db.query(
+            `UPDATE restaurant_orders SET status = 'Unpaid', order_type = 'room_service_served' WHERE order_id = ?`,
+            [req.params.id]
+        );
+        res.json({ message: 'Order marked as served. Charge added to room bill.' });
+    } catch (error) {
+        console.error('Serve order error:', error);
+        res.status(500).json({ error: 'Failed to update order.' });
+    }
+});
+
 // --- MENU ENDPOINTS FOR POS / PREVIEW ---
 router.get('/menu', listMenuItems);
 

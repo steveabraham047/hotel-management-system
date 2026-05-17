@@ -2,6 +2,9 @@ const db = require('../config/db');
 const bcrypt = require('bcrypt');
 const { buildAvailabilityClause } = require('./publicController');
 const { ensurePromoTables } = require('./promoController');
+const { createNotification } = require('../routes/notificationRoutes');
+const { createDigitalKey, revokeDigitalKeyForBooking } = require('./digitalKeyController');
+const { getPricingRules, getOccupancyRate, calculateDynamicPrice } = require('./pricingController');
 
 const ensureGuestFeatureTables = async () => {
     await db.execute(`
@@ -167,6 +170,8 @@ const getAvailableRooms = async (req, res) => {
 
     try {
         const availability = buildAvailabilityClause(check_in, check_out);
+        const rules = await getPricingRules();
+        const occupancy = await getOccupancyRate();
         const [rooms] = await db.execute(
             `SELECT room_id, room_number, type, price_per_night, status
              FROM rooms r
@@ -176,7 +181,10 @@ const getAvailableRooms = async (req, res) => {
             availability.params
         );
 
-        res.json(rooms);
+        res.json(rooms.map((room) => ({
+            ...room,
+            ...calculateDynamicPrice(room.price_per_night, rules, occupancy.occupancyRate, check_in || new Date())
+        })));
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
@@ -418,6 +426,7 @@ const cancelGuestBooking = async (req, res) => {
 
         if (booking.status === 'Active') {
             await connection.execute("UPDATE rooms SET status = 'Available' WHERE room_id = ?", [booking.room_id]);
+            await revokeDigitalKeyForBooking(connection, booking_id);
         }
 
         await connection.commit();
@@ -489,6 +498,12 @@ const rebookGuestBooking = async (req, res) => {
 
         if (status === 'Active') {
             await connection.execute("UPDATE rooms SET status = 'Occupied' WHERE room_id = ?", [roomId]);
+            await createDigitalKey(connection, {
+                booking_id: bookingResult.insertId,
+                guest_id: req.user.id,
+                room_id: roomId,
+                check_out
+            });
         }
 
         await connection.commit();
@@ -619,6 +634,12 @@ const createGuestBooking = async (req, res) => {
                 "UPDATE rooms SET status = 'Occupied' WHERE room_id = ?",
                 [room_id]
             );
+            await createDigitalKey(connection, {
+                booking_id: bookingResult.insertId,
+                guest_id: req.user.id,
+                room_id,
+                check_out
+            });
         }
 
         await connection.commit();
@@ -629,6 +650,9 @@ const createGuestBooking = async (req, res) => {
             promo: appliedPromo,
             addons: selectedAddons
         });
+
+        // Fire notification in the background
+        createNotification('booking', 'New Online Booking', `A new online booking was received for Room ${room_id}.`, 'shopping_cart', '/dashboard/bookings');
     } catch (error) {
         await connection.rollback();
         res.status(400).json({ error: error.message });

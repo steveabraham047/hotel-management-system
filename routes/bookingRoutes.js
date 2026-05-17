@@ -1,9 +1,13 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../config/db'); 
+const { createNotification } = require('./notificationRoutes');
+const { createDigitalKey, revokeDigitalKeyForBooking } = require('../controllers/digitalKeyController');
+const { setRoomCleaningStatus } = require('../controllers/housekeepingController');
+const auditLogger = require('../middleware/auditLogger');
 
 // --- POST /api/bookings: Process a Guest Check-In ---
-router.post('/', async (req, res) => {
+router.post('/', auditLogger('Check-In Guest'), async (req, res) => {
     const { guest_name, guest_email, guest_phone, room_id, check_in, check_out } = req.body;
 
     try {
@@ -32,11 +36,26 @@ router.post('/', async (req, res) => {
             INSERT INTO bookings (guest_id, room_id, check_in, check_out, status)
             VALUES (?, ?, ?, ?, 'Active')
         `;
-        await db.query(insertBookingQuery, [newGuestId, room_id, check_in, check_out]);
+        const [bookingResult] = await db.query(insertBookingQuery, [newGuestId, room_id, check_in, check_out]);
 
         await db.query('UPDATE rooms SET status = ? WHERE room_id = ?', ['Occupied', room_id]);
+        await createDigitalKey(db, {
+            booking_id: bookingResult.insertId,
+            guest_id: newGuestId,
+            room_id,
+            check_out
+        });
+
+        // Add to booking history
+        await db.query(
+            'INSERT INTO booking_history (booking_id, status, notes, created_by) VALUES (?, ?, ?, ?)',
+            [bookingResult.insertId, 'Active', 'Guest checked in at front desk', req.user?.name || 'Staff']
+        );
 
         res.status(201).json({ message: 'Check-in successful!' });
+
+        // Auto-fire notification
+        createNotification('booking', 'New Check-In', `${guest_name} checked into Room ${room_id}.`, 'login', '/dashboard/guest');
     } catch (error) {
         console.error('Check-in error:', error);
         res.status(500).json({ error: 'Database transaction failed.' });
@@ -44,7 +63,7 @@ router.post('/', async (req, res) => {
 });
 
 // --- POST /api/bookings/checkout/:room_id: Process a Guest Checkout & Generate Invoice ---
-router.post('/checkout/:room_id', async (req, res) => {
+router.post('/checkout/:room_id', auditLogger('Checkout Guest'), async (req, res) => {
     const { room_id } = req.params;
 
     try {
@@ -108,6 +127,14 @@ router.post('/checkout/:room_id', async (req, res) => {
         await db.query('UPDATE bookings SET status = "Completed" WHERE booking_id = ?', [booking.booking_id]);
         await db.query('UPDATE restaurant_orders SET status = "Paid" WHERE booking_id = ?', [booking.booking_id]);
         await db.query('UPDATE rooms SET status = "Available" WHERE room_id = ?', [room_id]);
+        await revokeDigitalKeyForBooking(db, booking.booking_id);
+        await setRoomCleaningStatus(db, room_id, 'Dirty', 'System', 'Auto-marked dirty after checkout.');
+
+        // Add to booking history
+        await db.query(
+            'INSERT INTO booking_history (booking_id, status, notes, created_by) VALUES (?, ?, ?, ?)',
+            [booking.booking_id, 'Completed', `Checked out. Invoice ${invoiceNo} generated.`, req.user?.name || 'Staff']
+        );
 
         // Return the final numbers to the frontend
         res.status(200).json({ 
@@ -115,9 +142,26 @@ router.post('/checkout/:room_id', async (req, res) => {
             invoiceData: { invoiceNo, roomSubtotal, foodTotal, addonTotal, taxes: roomTax + foodTax, grandTotal }
         });
 
+        // Auto-fire notification
+        createNotification('checkout', 'Guest Checked Out', `Room ${room_id} has been checked out. Invoice ${invoiceNo} generated for ₹${grandTotal.toLocaleString('en-IN')}.`, 'logout', '/dashboard/bookings');
+
     } catch (error) {
         console.error('Checkout error:', error);
         res.status(500).json({ error: 'Database transaction failed during checkout.' });
+    }
+});
+
+// --- GET /api/bookings/:id/history: Fetch Booking Status Timeline ---
+router.get('/:id/history', async (req, res) => {
+    try {
+        const [history] = await db.query(
+            'SELECT * FROM booking_history WHERE booking_id = ? ORDER BY created_at ASC',
+            [req.params.id]
+        );
+        res.status(200).json(history);
+    } catch (error) {
+        console.error('History fetch error:', error);
+        res.status(500).json({ error: 'Failed to fetch booking history.' });
     }
 });
 

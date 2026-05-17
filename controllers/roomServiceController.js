@@ -74,17 +74,18 @@ const placeRoomServiceOrder = async (req, res) => {
             orderItems.push({ ...menuItem, quantity: qty, line_total: lineTotal });
         }
 
-        // Insert the restaurant order
+        // Insert the restaurant order with item details as JSON note
+        const itemSummary = orderItems.map(i => `${i.quantity}x ${i.name}`).join(', ');
         const [orderResult] = await connection.execute(
-            `INSERT INTO restaurant_orders (booking_id, order_type, total_amount, status)
-             VALUES (?, 'room_service', ?, 'Unpaid')`,
-            [bookingId, totalAmount]
+            `INSERT INTO restaurant_orders (booking_id, order_type, total_amount, status, notes)
+             VALUES (?, 'room_service', ?, 'Unpaid', ?)`,
+            [bookingId, totalAmount, itemSummary]
         );
 
         await connection.commit();
 
         res.status(201).json({
-            message: 'Room service order placed successfully!',
+            message: 'Room service order placed successfully! 🍽️ Our team will bring it to your room.',
             order_id: orderResult.insertId,
             items: orderItems,
             total: totalAmount
