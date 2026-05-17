@@ -4,6 +4,9 @@
   "description": "",
   "main": "index.js",
   "scripts": {
+    "start": "node server.js",
+    "db:init": "node scripts/initDatabase.js",
+    "seed:menu": "node scripts/seedPremiumMenu.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
